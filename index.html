@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <title>Notice Vivante - NORDA SKAL</title>
+
+    <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+
+    <style>
+        :root { --accent: #ffd3ba; --ink: #272d33; }
+        html, body { margin: 0; padding: 0; overflow: hidden;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+
+        #ui { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+
+        #hint { position: absolute; top: max(14px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+            width: calc(100% - 32px); max-width: 480px; box-sizing: border-box; text-align: center;
+            background: rgba(27, 36, 44, .88); color: #fff; padding: 12px 16px; border-radius: 12px;
+            font-size: 15px; line-height: 1.35; transition: opacity .25s; }
+        #hint.hidden { opacity: 0; }
+
+        #panel { position: absolute; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translate(-50%, 24px);
+            width: calc(100% - 24px); max-width: 520px; box-sizing: border-box; padding: 14px 16px 16px;
+            background: rgba(27, 36, 44, .92); color: #fff; border-radius: 18px;
+            opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; }
+        #panel.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+
+        #stepLine { display: flex; align-items: baseline; gap: 10px; }
+        #stepNum { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); white-space: nowrap; }
+        #title { font-size: 18px; font-weight: 700; }
+        #text { margin: 6px 0 12px; font-size: 14px; line-height: 1.4; color: #dfe5ea; min-height: 2.8em; }
+
+        #adjustments { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 0 14px; }
+        .adjustment { min-width: 0; }
+        .adjustment label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 12px; color: #dfe5ea; }
+        .adjustment output { color: #fff; font-variant-numeric: tabular-nums; }
+        .adjustment input { display: block; width: 100%; margin: 0; accent-color: var(--accent); }
+
+        #dots { display: flex; gap: 6px; margin-bottom: 12px; }
+        #dots span { flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .22); transition: background .25s; }
+        #dots span.on { background: var(--accent); }
+
+        #buttons { display: flex; gap: 10px; }
+        #buttons button { flex: 1; height: 48px; border: 0; border-radius: 12px; font-size: 16px; font-weight: 700;
+            font-family: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+        #prev { background: rgba(255, 255, 255, .14); color: #fff; }
+        #next { background: var(--accent); color: #fff; }
+        #buttons button:disabled { opacity: .35; }
+        #buttons button:active:not(:disabled) { transform: scale(.97); }
+    </style>
+
+    <script>
+    (function () {
+        var THREE = AFRAME.THREE;
+
+        // ---------------------------------------------------------------
+        // Les 6 étapes de montage. Les noms de "node" sont ceux du fichier
+        // meuble.glb. "from" = point de départ de la pièce (en mètres du
+        // modèle) par rapport à sa position finale. Les directions sont
+        // celles du repère du marqueur : x = droite, y = haut, z = vers vous.
+        // ---------------------------------------------------------------
+        var STEPS = [
+            { title: "Base et quatre pieds",
+              text: "Posez la base à plat, puis fixez les quatre pieds, vis vers le bas.",
+              parts: [
+                  { node: "Bottom", from: [0, 0.55, 0], delay: 0,   dur: 1100, ease: "bounce" },
+                  { node: "Pied",   from: [0, -0.40, 0], delay: 900, dur: 800,  ease: "back" }
+              ] },
+            { title: "Côté gauche",
+              text: "Placez le panneau gauche debout sur le bord gauche de la base, perçages vers l'intérieur.",
+              parts: [ { node: "left", from: [-0.65, 0.08, 0], delay: 0, dur: 1000, ease: "back" } ] },
+            { title: "Planche centrale",
+              text: "Glissez la planche centrale à mi-hauteur, avant de fermer le meuble.",
+              parts: [ { node: "Middle", from: [0.65, 0, 0], delay: 0, dur: 1000, ease: "back" } ] },
+            { title: "Côté droit",
+              text: "Placez le panneau droit et vérifiez que la planche centrale est bien engagée.",
+              parts: [ { node: "right", from: [0.65, 0.08, 0], delay: 0, dur: 1000, ease: "back" } ] },
+            { title: "Fond",
+              text: "Posez le fond à l'arrière du meuble, face lisse vers l'extérieur.",
+              parts: [ { node: "Plane", from: [0, 0.05, -0.65], delay: 0, dur: 1000, ease: "back" } ] },
+            { title: "Plateau",
+              text: "Posez le plateau en dernier et fixez-le. Votre table de chevet est terminée !",
+              parts: [ { node: "Top", from: [0, 0.60, 0], spinY: 0.9, delay: 0, dur: 1300, ease: "bounce" } ] }
+        ];
+
+        var Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+        var EASE = {
+            cubic: function (p) { return 1 - Math.pow(1 - p, 3); },
+            back: function (p) { var c1 = 1.1, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); },
+            bounce: function (p) {
+                var n1 = 7.5625, d1 = 2.75;
+                if (p < 1 / d1) return n1 * p * p;
+                if (p < 2 / d1) { p -= 1.5 / d1; return n1 * p * p + 0.75; }
+                if (p < 2.5 / d1) { p -= 2.25 / d1; return n1 * p * p + 0.9375; }
+                p -= 2.625 / d1; return n1 * p * p + 0.984375;
+            }
+        };
+        function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
+
+        AFRAME.registerComponent("assembly", {
+            init: function () {
+                var self = this;
+                this.time = 0;
+                this.step = 0;
+                this.ready = false;
+                this.parts = [];
+                this.marker = this.el.closest("a-marker");
+                this.ui = {
+                    hint: document.getElementById("hint"),
+                    panel: document.getElementById("panel"),
+                    num: document.getElementById("stepNum"),
+                    title: document.getElementById("title"),
+                    text: document.getElementById("text"),
+                    dots: document.getElementById("dots"),
+                    prev: document.getElementById("prev"),
+                    next: document.getElementById("next"),
+                    scale: document.getElementById("modelScale"),
+                    scaleValue: document.getElementById("scaleValue"),
+                    rotation: document.getElementById("modelRotation"),
+                    rotationValue: document.getElementById("rotationValue")
+                };
+                STEPS.forEach(function () { self.ui.dots.appendChild(document.createElement("span")); });
+
+                this.ui.prev.addEventListener("click", function () { if (self.ready && self.step > 1) self.goTo(self.step - 1); });
+                this.ui.next.addEventListener("click", function () {
+                    if (!self.ready) return;
+                    if (self.step < STEPS.length) self.goTo(self.step + 1); else self.restart();
+                });
+                this.ui.scale.addEventListener("input", function () {
+                    var value = Number(self.ui.scale.value);
+                    self.el.object3D.scale.setScalar(value);
+                    self.ui.scaleValue.value = value.toFixed(1) + "x";
+                });
+                this.ui.rotation.addEventListener("input", function () {
+                    var value = Number(self.ui.rotation.value);
+                    self.el.object3D.rotation.y = THREE.MathUtils.degToRad(value);
+                    self.ui.rotationValue.value = value + "°";
+                });
+
+                if (this.marker) {
+                    this.marker.addEventListener("markerFound", function () {
+                        self.ui.hint.classList.add("hidden");
+                        if (self.ready && self.step === 0) self.goTo(1);
+                    });
+                    this.marker.addEventListener("markerLost", function () {
+                        if (self.step > 0) { self.ui.hint.textContent = "Marqueur perdu : visez de nouveau la notice."; self.ui.hint.classList.remove("hidden"); }
+                    });
+                }
+                this.el.addEventListener("model-loaded", function () { self.setup(); });
+                this.el.addEventListener("model-error", function () {
+                    self.ui.hint.textContent = "Le modèle 3D n'a pas pu être chargé.";
+                    self.ui.hint.classList.remove("hidden");
+                });
+                window.NV = this; // pratique pour les tests dans la console
+            },
+
+            setup: function () {
+                var self = this;
+                var root = this.el.getObject3D("mesh");
+                if (!root) return;
+                var box = new THREE.Box3();
+                this.parts = [];
+
+                STEPS.forEach(function (st, si) {
+                    st.parts.forEach(function (cfg) {
+                        var node = root.getObjectByName(cfg.node);
+                        if (!node) { console.warn("Pièce introuvable dans le .glb : " + cfg.node); return; }
+
+                        // boîte englobante du modèle monté, pour le centrer sur le marqueur
+                        node.updateMatrix();
+                        node.traverse(function (o) {
+                            if (!o.isMesh) return;
+                            o.geometry.computeBoundingBox();
+                            var m = node.matrix.clone();
+                            if (o !== node) { o.updateMatrix(); m.multiply(o.matrix); }
+                            box.union(o.geometry.boundingBox.clone().applyMatrix4(m));
+                        });
+
+                        self.parts.push({
+                            node: node, step: si + 1,
+                            from: new THREE.Vector3().fromArray(cfg.from),
+                            spinY: cfg.spinY || 0, delay: cfg.delay || 0, dur: cfg.dur || 1000, ease: EASE[cfg.ease] || EASE.cubic,
+                            finalPos: node.position.clone(), finalQuat: node.quaternion.clone(),
+                            p: 0, target: 0, startAt: 0
+                        });
+                    });
+                });
+
+                // centre le meuble sur le marqueur, pieds posés sur la notice
+                var c = box.getCenter(new THREE.Vector3());
+                root.position.set(-c.x, -box.min.y + 0.002, -c.z);
+                this.ui.scale.value = String(this.el.object3D.scale.x);
+                this.ui.scaleValue.value = this.el.object3D.scale.x.toFixed(1) + "x";
+                var rotation = Math.round(THREE.MathUtils.radToDeg(this.el.object3D.rotation.y));
+                this.ui.rotation.value = String(rotation);
+                this.ui.rotationValue.value = rotation + "°";
+
+                this.parts.forEach(function (pt) { self.apply(pt); });
+                this.ready = true;
+                this.ui.hint.classList.remove("hidden");
+                // si le marqueur est déjà visible, on démarre tout de suite
+                if (this.marker && this.marker.object3D.visible) { this.ui.hint.classList.add("hidden"); this.goTo(1); }
+            },
+
+            apply: function (pt) {
+                var p = clamp(pt.p, 0, 1);
+                var e = pt.ease(p);
+                var k = 1 - e;
+                pt.node.position.set(
+                    pt.finalPos.x + pt.from.x * k,
+                    pt.finalPos.y + pt.from.y * k,
+                    pt.finalPos.z + pt.from.z * k);
+                if (pt.spinY) {
+                    var dq = new THREE.Quaternion().setFromAxisAngle(Y_AXIS, pt.spinY * k);
+                    pt.node.quaternion.copy(pt.finalQuat).premultiply(dq);
+                }
+                pt.node.visible = pt.p > 0.001;
+            },
+
+            goTo: function (n) {
+                n = clamp(n, 0, STEPS.length);
+                var self = this;
+                this.step = n;
+                this.parts.forEach(function (pt) {
+                    var on = pt.step <= n, wasOn = pt.target === 1;
+                    pt.target = on ? 1 : 0;
+                    pt.mixTarget = pt.step === n ? 1 : 0;
+                    if (on && !wasOn) pt.startAt = self.time + pt.delay;
+                    else if (!on && wasOn) pt.startAt = self.time;
+                });
+                this.updateUI(Math.max(1, n));
+            },
+
+            restart: function () {
+                var self = this;
+                this.goTo(0);
+                this.updateUI(1);
+                setTimeout(function () { self.goTo(1); }, 1000);
+            },
+
+            updateUI: function (n) {
+                var st = STEPS[n - 1], ui = this.ui;
+                ui.panel.classList.add("show");
+                ui.num.textContent = "Étape " + n + " / " + STEPS.length;
+                ui.title.textContent = st.title;
+                ui.text.textContent = st.text;
+                Array.prototype.forEach.call(ui.dots.children, function (d, i) { d.classList.toggle("on", i < n); });
+                ui.prev.disabled = n <= 1;
+                ui.next.textContent = n >= STEPS.length ? "Rejouer" : "Suivant";
+            },
+
+            tick: function (t, dt) {
+                if (!this.ready) return;
+                dt = Math.min(dt, 64);
+                this.time += dt;
+                for (var i = 0; i < this.parts.length; i++) {
+                    var pt = this.parts[i];
+                    if (this.time < pt.startAt || pt.p === pt.target) continue;
+                    var rate = dt / (pt.target > pt.p ? pt.dur : pt.dur * 0.6);
+                    pt.p = pt.target > pt.p ? Math.min(pt.target, pt.p + rate) : Math.max(pt.target, pt.p - rate);
+                    this.apply(pt);
+                }
+            }
+        });
+    })();
+    </script>
+</head>
+
+<body>
+    <div id="ui">
+        <div id="hint">Visez le marqueur imprimé sur votre notice.</div>
+        <div id="panel">
+            <div id="stepLine"><span id="stepNum"></span><span id="title"></span></div>
+            <p id="text"></p>
+            <div id="dots"></div>
+            <div id="adjustments">
+                <div class="adjustment">
+                    <label for="modelScale">Échelle <output id="scaleValue">1.5x</output></label>
+                    <input id="modelScale" type="range" min="0.5" max="3" step="0.1" value="1.5">
+                </div>
+                <div class="adjustment">
+                    <label for="modelRotation">Rotation <output id="rotationValue">0°</output></label>
+                    <input id="modelRotation" type="range" min="-180" max="180" step="5" value="0">
+                </div>
+            </div>
+            <div id="buttons">
+                <button id="prev" type="button">Précédent</button>
+                <button id="next" type="button">Suivant</button>
+            </div>
+        </div>
+    </div>
+
+    <a-scene embedded arjs='sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;' vr-mode-ui="enabled: false">
+
+        <a-light type="ambient" color="#ffffff" intensity="0.85"></a-light>
+        <a-light type="directional" color="#ffffff" intensity="0.9" position="1 3 2"></a-light>
+
+        <a-marker preset="hiro" smooth="true" smoothCount="8" smoothTolerance="0.01" smoothThreshold="4">
+            <!-- scale = taille du meuble par rapport au marqueur (1 = largeur du marqueur) -->
+            <a-entity gltf-model="url(assets/meuble.glb)" scale="1.5 1.5 1.5" assembly></a-entity>
+        </a-marker>
+
+        <a-entity camera></a-entity>
+    </a-scene>
+</body>
+</html>
